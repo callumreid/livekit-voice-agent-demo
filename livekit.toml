@@ -3,3 +3,6 @@
 
 [agent]
   id = "CA_REezQgt5v7MH"
+
+[build]
+  image = "callumcoval/coval-livekit-agent:latest"
