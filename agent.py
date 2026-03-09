@@ -77,7 +77,7 @@ You have access to tools — use them when relevant.""",
 
 server = AgentServer()
 
-@server.rtc_session(agent_name="livekit-voice-agent")
+@server.rtc_session(agent_name="livekit-voice-agent-otel")
 async def my_agent(ctx: agents.JobContext):
     session = AgentSession(
         stt=deepgram.STT(model="nova-3"),
