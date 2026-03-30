@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 from livekit import agents, rtc
 from livekit.agents import AgentServer, AgentSession, Agent, function_tool, room_io
-from livekit.plugins import deepgram, noise_cancellation, silero
+from livekit.plugins import noise_cancellation, openai, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 load_dotenv(".env.local")
@@ -51,11 +51,15 @@ You have access to tools — use them when relevant.""",
             max_results: Maximum number of results to return (1-5, default 3)
         """
         from duckduckgo_search import DDGS
+
         max_results = min(int(max_results), 5)
         try:
             ddgs = DDGS()
             raw = list(ddgs.text(query, max_results=max_results))
-            results = [{"title": r["title"], "url": r["href"], "snippet": r["body"]} for r in raw]
+            results = [
+                {"title": r["title"], "url": r["href"], "snippet": r["body"]}
+                for r in raw
+            ]
             return {"query": query, "results": results}
         except Exception as e:
             return {"query": query, "error": str(e), "results": []}
@@ -77,12 +81,13 @@ You have access to tools — use them when relevant.""",
 
 server = AgentServer()
 
+
 @server.rtc_session(agent_name="livekit-voice-agent-otel")
 async def my_agent(ctx: agents.JobContext):
     session = AgentSession(
-        stt=deepgram.STT(model="nova-3"),
-        llm="openai/gpt-4o-mini",
-        tts=deepgram.TTS(model="aura-asteria-en"),
+        stt=openai.STT(model="whisper-1"),
+        llm=openai.LLM(model="gpt-4o-mini"),
+        tts=openai.TTS(model="tts-1"),
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
     )
@@ -92,7 +97,12 @@ async def my_agent(ctx: agents.JobContext):
         agent=Assistant(),
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: noise_cancellation.BVCTelephony() if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP else noise_cancellation.BVC(),
+                noise_cancellation=lambda params: (
+                    noise_cancellation.BVCTelephony()
+                    if params.participant.kind
+                    == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                    else noise_cancellation.BVC()
+                ),
             ),
         ),
     )
