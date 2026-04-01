@@ -211,7 +211,12 @@ def _begin_tracing_context() -> str:
 
 
 def setup_coval_tracing(service_name: str = "coval-agent") -> None:
-    """Initialize OpenTelemetry tracing for Coval."""
+    """Initialize OpenTelemetry tracing for Coval.
+
+    Sets up the TracerProvider and registers it with BOTH the global OTel API
+    AND LiveKit's internal tracer holder (via livekit.agents.telemetry).
+    This ensures our SpanProcessor sees LiveKit's native spans.
+    """
     global _router
     if not COVAL_API_KEY:
         logger.warning("COVAL_API_KEY not set — tracing disabled")
@@ -223,6 +228,16 @@ def setup_coval_tracing(service_name: str = "coval-agent") -> None:
         provider.add_span_processor(_CovalSpanRenamer())
         provider.add_span_processor(SimpleSpanProcessor(_router))
         trace.set_tracer_provider(provider)
+
+        # Also register with LiveKit's internal tracer so our SpanProcessor
+        # sees native framework spans (stt, llm, tts, etc.)
+        try:
+            from livekit.agents.telemetry import set_tracer_provider as lk_set_tracer_provider
+            lk_set_tracer_provider(provider)
+            logger.info("Coval tracing registered with LiveKit telemetry")
+        except ImportError:
+            logger.debug("LiveKit telemetry not available — using global provider only")
+
         logger.info("Coval tracing initialized — waiting for simulation ID")
     else:
         logger.info("Coval tracing reset — waiting for simulation ID")
