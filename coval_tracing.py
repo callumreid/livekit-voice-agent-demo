@@ -76,6 +76,9 @@ class _CovalSpanRenamer(SpanProcessor):
 
         effective_name = getattr(span, "_name", name)
 
+        # Debug: tag every span so we can verify the processor fires
+        span.set_attribute("coval.enriched", True)
+
         # Enrich STT spans with confidence (synthetic)
         if effective_name == "stt" or name == "stt":
             span.set_attribute("stt.confidence", 0.95)
