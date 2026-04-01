@@ -60,7 +60,12 @@ _SPAN_NAME_MAP = {
 
 
 class _CovalSpanRenamer(SpanProcessor):
-    """Renames spans on start to match Coval conventions."""
+    """Renames spans on start and enriches them with Coval attributes.
+
+    LiveKit 1.3's native tracing creates stt/llm/tts spans. We enrich them
+    with stt.confidence, llm.finish_reason defaults, and track STT spans
+    for provider sub-span emission on_end.
+    """
 
     def on_start(self, span: Span, parent_context=None) -> None:
         name = span.name
@@ -68,6 +73,17 @@ class _CovalSpanRenamer(SpanProcessor):
             span._name = _SPAN_NAME_MAP[name]
         elif name.startswith("function_call"):
             span._name = "llm_tool_call"
+
+        effective_name = getattr(span, "_name", name)
+
+        # Enrich STT spans with confidence (synthetic)
+        if effective_name == "stt" or name == "stt":
+            span.set_attribute("stt.confidence", 0.95)
+
+        # Enrich LLM spans with default finish_reason
+        if effective_name == "llm" or name == "llm":
+            span.set_attribute("llm.finish_reason", "stop")
+
         simulation_id = _current_simulation_id.get()
         if simulation_id:
             span.set_attribute(_INTERNAL_SIMULATION_ID_ATTR, simulation_id)
@@ -231,98 +247,38 @@ def set_active_stt_provider(name: str) -> None:
 
 
 def instrument_session(session) -> None:
-    """Hook AgentSession events to create Coval trace spans.
+    """Hook AgentSession events to emit provider sub-spans and override finish_reason.
 
-    Uses the pending-LLM-span pattern: LLM metrics are buffered until we know
-    whether tools were called, so llm.finish_reason can be set accurately.
-
-    Emits stt.provider.{name} child spans under each STT span (TRACE-10).
+    LiveKit 1.3's native tracing creates stt/llm/tts spans with basic attributes.
+    The _CovalSpanRenamer adds stt.confidence and llm.finish_reason defaults.
+    This function adds:
+    - stt.provider.{name} + stt.provider_selection child spans (TRACE-10)
+    - llm.finish_reason override to "tool_calls" when tools are invoked
     """
     tracer = trace.get_tracer("coval.instrumentation")
 
-    _last_transcript: dict = {"text": "", "ts": 0.0}
-    _pending_llm: dict = {"ttfb": None, "input_tokens": 0, "output_tokens": 0}
-
-    def _emit_stt_span(ttfb: float, transcript: str) -> None:
-        confidence = 0.95  # synthetic — LiveKit metrics don't expose per-utterance confidence
-        provider = _active_stt_provider.get()
-        with tracer.start_as_current_span("stt") as span:
-            span.set_attribute("stt.transcription", transcript)
-            span.set_attribute("metrics.ttfb", round(ttfb, 4))
-            span.set_attribute("stt.confidence", confidence)
-            # TRACE-10: provider sub-span
-            with tracer.start_as_current_span(f"stt.provider.{provider}") as p:
-                p.set_attribute("stt.providerName", provider)
-                p.set_attribute("stt.confidence", confidence)
-                p.set_attribute("metrics.ttfb", round(ttfb, 4))
-            # TRACE-10: provider selection sub-span
-            with tracer.start_as_current_span("stt.provider_selection") as sel:
-                sel.set_attribute("stt.selectedProvider", provider)
-                sel.set_attribute("stt.fallbackAvailable", "google" if provider == "deepgram" else "deepgram")
-
-    def _emit_llm_span(ttfb: float, finish_reason: str, input_tokens: int, output_tokens: int) -> None:
-        with tracer.start_as_current_span("llm") as span:
-            span.set_attribute("metrics.ttfb", round(ttfb, 4))
-            span.set_attribute("llm.finish_reason", finish_reason)
-            span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
-            span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
-
-    def _flush_pending_llm(finish_reason: str) -> None:
-        if _pending_llm["ttfb"] is not None:
-            _emit_llm_span(
-                _pending_llm["ttfb"],
-                finish_reason,
-                _pending_llm["input_tokens"],
-                _pending_llm["output_tokens"],
-            )
-            _pending_llm["ttfb"] = None
-            _pending_llm["input_tokens"] = 0
-            _pending_llm["output_tokens"] = 0
-
     def _on_user_input_transcribed(event):
+        """Emit provider sub-spans after each STT transcription."""
         if not getattr(event, "is_final", False):
             return
-        import time as _time
-        _last_transcript["text"] = getattr(event, "transcript", "") or ""
-        _last_transcript["ts"] = _time.time()
+        provider = _active_stt_provider.get()
+        # TRACE-10: provider sub-span (sibling of native stt span)
+        with tracer.start_as_current_span(f"stt.provider.{provider}") as p:
+            p.set_attribute("stt.providerName", provider)
+            p.set_attribute("stt.confidence", 0.95)
+        with tracer.start_as_current_span("stt.provider_selection") as sel:
+            sel.set_attribute("stt.selectedProvider", provider)
+            sel.set_attribute("stt.fallbackAvailable", "google" if provider == "deepgram" else "deepgram")
 
     def _on_function_tools_executed(event):
-        _flush_pending_llm("tool_calls")
-        for call in getattr(event, "function_calls", []):
-            with tracer.start_as_current_span("llm_tool_call") as span:
-                span.set_attribute("function.name", getattr(call, "name", ""))
-                span.set_attribute("tool_call_id", getattr(call, "call_id", ""))
-                span.set_attribute("function.arguments", getattr(call, "arguments", ""))
-
-    def _on_metrics_collected(event):
-        metrics = getattr(event, "metrics", None)
-        if metrics is None:
-            return
-
-        from livekit.agents import metrics as agent_metrics
-
-        if isinstance(metrics, agent_metrics.STTMetrics):
-            transcript = _last_transcript.get("text", "")
-            _emit_stt_span(ttfb=metrics.duration, transcript=transcript)
-
-        elif isinstance(metrics, agent_metrics.LLMMetrics):
-            _flush_pending_llm("stop")
-            _pending_llm["ttfb"] = metrics.ttft
-            _pending_llm["input_tokens"] = metrics.prompt_tokens
-            _pending_llm["output_tokens"] = metrics.completion_tokens
-
-        elif isinstance(metrics, agent_metrics.TTSMetrics):
-            _flush_pending_llm("stop")
-            with tracer.start_as_current_span("tts") as span:
-                span.set_attribute("metrics.ttfb", round(metrics.ttfb, 4))
-
-    def _on_close(_ev):
-        _flush_pending_llm("stop")
+        """Override llm.finish_reason to 'tool_calls' on the current LLM span."""
+        # The native LLM span may still be active; try to find it
+        current = trace.get_current_span()
+        if current and current.is_recording():
+            current.set_attribute("llm.finish_reason", "tool_calls")
 
     session.on("user_input_transcribed", _on_user_input_transcribed)
     session.on("function_tools_executed", _on_function_tools_executed)
-    session.on("metrics_collected", _on_metrics_collected)
-    session.on("close", _on_close)
     logger.info("Coval session instrumentation active")
 
 
