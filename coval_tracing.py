@@ -213,9 +213,9 @@ def _begin_tracing_context() -> str:
 def setup_coval_tracing(service_name: str = "coval-agent") -> None:
     """Initialize OpenTelemetry tracing for Coval.
 
-    Sets up the TracerProvider and registers it with BOTH the global OTel API
-    AND LiveKit's internal tracer holder (via livekit.agents.telemetry).
-    This ensures our SpanProcessor sees LiveKit's native spans.
+    For LiveKit agents: adds our SpanProcessors to LiveKit's existing
+    TracerProvider rather than replacing it, so native framework spans
+    get enriched with Coval attributes.
     """
     global _router
     if not COVAL_API_KEY:
@@ -223,20 +223,28 @@ def setup_coval_tracing(service_name: str = "coval-agent") -> None:
         return
     if _router is None:
         _router = _ContextualCovalExporter(api_key=COVAL_API_KEY)
-        resource = Resource.create({SERVICE_NAME: service_name})
-        provider = TracerProvider(resource=resource)
-        provider.add_span_processor(_CovalSpanRenamer())
-        provider.add_span_processor(SimpleSpanProcessor(_router))
-        trace.set_tracer_provider(provider)
 
-        # Also register with LiveKit's internal tracer so our SpanProcessor
-        # sees native framework spans (stt, llm, tts, etc.)
+        # Try to attach to LiveKit's existing TracerProvider (set by _setup_cloud_tracer)
+        existing_provider = None
         try:
-            from livekit.agents.telemetry import set_tracer_provider as lk_set_tracer_provider
-            lk_set_tracer_provider(provider)
-            logger.info("Coval tracing registered with LiveKit telemetry")
-        except ImportError:
-            logger.debug("LiveKit telemetry not available — using global provider only")
+            from livekit.agents.telemetry.traces import tracer as lk_tracer
+            if isinstance(lk_tracer._tracer_provider, TracerProvider):
+                existing_provider = lk_tracer._tracer_provider
+                logger.info("Found LiveKit TracerProvider — adding Coval processors to it")
+        except (ImportError, AttributeError):
+            pass
+
+        if existing_provider:
+            # Add our processors to LiveKit's existing provider
+            existing_provider.add_span_processor(_CovalSpanRenamer())
+            existing_provider.add_span_processor(SimpleSpanProcessor(_router))
+        else:
+            # No existing provider — create our own (non-LiveKit environments)
+            resource = Resource.create({SERVICE_NAME: service_name})
+            provider = TracerProvider(resource=resource)
+            provider.add_span_processor(_CovalSpanRenamer())
+            provider.add_span_processor(SimpleSpanProcessor(_router))
+            trace.set_tracer_provider(provider)
 
         logger.info("Coval tracing initialized — waiting for simulation ID")
     else:
