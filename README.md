@@ -49,7 +49,15 @@ This project provides a voice-enabled AI assistant built on the LiveKit Agents f
    OPENAI_API_KEY=your_openai_key
    ASSEMBLYAI_API_KEY=your_assemblyai_key
    CARTESIA_API_KEY=your_cartesia_key
+   COVAL_API_KEY=your_default_coval_key
+   COVAL_API_KEY_CAL_DEMO=your_cal_demo_key
+   COVAL_API_KEY_DDBD=your_ddbd_key
    ```
+
+   Multi-org tracing notes:
+   `COVAL_API_KEY` remains the legacy fallback.
+   Add one env var per org using `COVAL_API_KEY_<LABEL>`, for example
+   `COVAL_API_KEY_CAL_DEMO` and `COVAL_API_KEY_DDBD`.
 
 ## Running
 
