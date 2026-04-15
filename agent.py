@@ -41,22 +41,34 @@ from livekit.agents.voice.events import (
     MetricsCollectedEvent,
     UserInputTranscribedEvent,
 )
-from livekit.plugins import deepgram, noise_cancellation, openai as livekit_openai, silero
+from livekit.plugins import (
+    deepgram,
+    noise_cancellation,
+    openai as livekit_openai,
+    silero,
+)
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 from opentelemetry import trace as otel_trace
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+from opentelemetry.sdk.trace.export import (
+    SimpleSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
+)
 
 load_dotenv(".env.local")
 
 COVAL_TRACES_ENDPOINT = "https://api.coval.dev/v1/traces"
 COVAL_API_KEYS_JSON = os.environ.get("COVAL_API_KEYS_JSON", "")
 COVAL_API_KEYS_FILE = os.environ.get("COVAL_API_KEYS_FILE", "")
-COVAL_API_KEYS_REFRESH_SECONDS = max(float(os.environ.get("COVAL_API_KEYS_REFRESH_SECONDS", "30")), 0.0)
+COVAL_API_KEYS_REFRESH_SECONDS = max(
+    float(os.environ.get("COVAL_API_KEYS_REFRESH_SECONDS", "30")), 0.0
+)
 
 
 # ── Tracing ────────────────────────────────────────────────────────────────────
+
 
 def _span_to_otlp_json(span: ReadableSpan) -> dict:
     """Convert a ReadableSpan to OTLP JSON format (resourceSpans structure)."""
@@ -89,20 +101,31 @@ def _span_to_otlp_json(span: ReadableSpan) -> dict:
         "startTimeUnixNano": str(span.start_time) if span.start_time else "0",
         "endTimeUnixNano": str(span.end_time) if span.end_time else "0",
         "attributes": attrs(span.attributes),
-        "status": {"code": span.status.status_code.value, "message": span.status.description or ""},
+        "status": {
+            "code": span.status.status_code.value,
+            "message": span.status.description or "",
+        },
         "events": [],
         "links": [],
     }
 
     resource_attrs = attrs(span.resource.attributes) if span.resource else []
     return {
-        "resourceSpans": [{
-            "resource": {"attributes": resource_attrs},
-            "scopeSpans": [{
-                "scope": {"name": span.instrumentation_scope.name if span.instrumentation_scope else ""},
-                "spans": [span_dict],
-            }],
-        }]
+        "resourceSpans": [
+            {
+                "resource": {"attributes": resource_attrs},
+                "scopeSpans": [
+                    {
+                        "scope": {
+                            "name": span.instrumentation_scope.name
+                            if span.instrumentation_scope
+                            else ""
+                        },
+                        "spans": [span_dict],
+                    }
+                ],
+            }
+        ]
     }
 
 
@@ -127,7 +150,10 @@ class _ApiKeyStore:
 
     def _refresh_from_file_if_needed(self) -> None:
         now = time.time()
-        if self._cached_items and now - self._last_checked_at < COVAL_API_KEYS_REFRESH_SECONDS:
+        if (
+            self._cached_items
+            and now - self._last_checked_at < COVAL_API_KEYS_REFRESH_SECONDS
+        ):
             return
 
         self._last_checked_at = now
@@ -135,7 +161,9 @@ class _ApiKeyStore:
             stat = os.stat(COVAL_API_KEYS_FILE)
         except OSError as exc:
             if not self._cached_items:
-                print(f"[coval] unable to read COVAL_API_KEYS_FILE={COVAL_API_KEYS_FILE}: {exc}")
+                print(
+                    f"[coval] unable to read COVAL_API_KEYS_FILE={COVAL_API_KEYS_FILE}: {exc}"
+                )
             return
 
         if self._file_mtime == stat.st_mtime and self._cached_items:
@@ -145,7 +173,9 @@ class _ApiKeyStore:
             with open(COVAL_API_KEYS_FILE, "r", encoding="utf-8") as handle:
                 parsed = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"[coval] failed to parse COVAL_API_KEYS_FILE={COVAL_API_KEYS_FILE}: {exc}")
+            print(
+                f"[coval] failed to parse COVAL_API_KEYS_FILE={COVAL_API_KEYS_FILE}: {exc}"
+            )
             return
 
         loaded = self._items_from_mapping(parsed)
@@ -167,7 +197,9 @@ class _ApiKeyStore:
 
         env_items: list[tuple[str, str]] = []
         for env_name, raw_value in sorted(os.environ.items()):
-            if not env_name.startswith("COVAL_API_KEY_") or env_name.startswith("COVAL_API_KEYS_"):
+            if not env_name.startswith("COVAL_API_KEY_") or env_name.startswith(
+                "COVAL_API_KEYS_"
+            ):
                 continue
             value = raw_value.strip()
             suffix = env_name[len("COVAL_API_KEY_") :].strip()
@@ -221,11 +253,17 @@ class _TraceKeyRouter:
     def has_keys(self) -> bool:
         return bool(_api_key_store.get_items())
 
-    def export(self, spans: Sequence[ReadableSpan], simulation_id: str) -> SpanExportResult:
+    def export(
+        self, spans: Sequence[ReadableSpan], simulation_id: str
+    ) -> SpanExportResult:
         payload = _spans_to_otlp_json(spans)
         if not payload["resourceSpans"]:
             return SpanExportResult.SUCCESS
-        return SpanExportResult.SUCCESS if self._export_payload(payload, simulation_id) else SpanExportResult.FAILURE
+        return (
+            SpanExportResult.SUCCESS
+            if self._export_payload(payload, simulation_id)
+            else SpanExportResult.FAILURE
+        )
 
     def _export_payload(self, payload: dict, simulation_id: str) -> bool:
         items = _api_key_store.get_items()
@@ -236,7 +274,9 @@ class _TraceKeyRouter:
         configured = dict(items)
         cached_label = self._selected_label_by_simulation.get(simulation_id)
         if cached_label and cached_label in configured:
-            success, outcome = self._post_payload(payload, simulation_id, cached_label, configured[cached_label])
+            success, outcome = self._post_payload(
+                payload, simulation_id, cached_label, configured[cached_label]
+            )
             if success:
                 return True
             if outcome != "mismatch":
@@ -247,11 +287,15 @@ class _TraceKeyRouter:
         for label, api_key in items:
             if label == cached_label:
                 continue
-            success, outcome = self._post_payload(payload, simulation_id, label, api_key)
+            success, outcome = self._post_payload(
+                payload, simulation_id, label, api_key
+            )
             if success:
                 with self._lock:
                     self._selected_label_by_simulation[simulation_id] = label
-                print(f"[coval] selected API key '{label}' for simulation_id={simulation_id}")
+                print(
+                    f"[coval] selected API key '{label}' for simulation_id={simulation_id}"
+                )
                 return True
             if outcome == "mismatch":
                 continue
@@ -260,7 +304,9 @@ class _TraceKeyRouter:
         print(f"[coval] no configured API key matched simulation_id={simulation_id}")
         return False
 
-    def _post_payload(self, payload: dict, simulation_id: str, label: str, api_key: str) -> tuple[bool, str]:
+    def _post_payload(
+        self, payload: dict, simulation_id: str, label: str, api_key: str
+    ) -> tuple[bool, str]:
         try:
             resp = requests.post(
                 self._endpoint,
@@ -277,9 +323,13 @@ class _TraceKeyRouter:
         if resp.status_code in (401, 403, 404):
             return False, "mismatch"
         if resp.status_code == 429 or resp.status_code >= 500:
-            print(f"[coval] retryable trace export failure {resp.status_code} using key '{label}'")
+            print(
+                f"[coval] retryable trace export failure {resp.status_code} using key '{label}'"
+            )
             return False, "retry"
-        print(f"[coval] trace export failed {resp.status_code} using key '{label}': {resp.text}")
+        print(
+            f"[coval] trace export failed {resp.status_code} using key '{label}': {resp.text}"
+        )
         return False, "fatal"
 
 
@@ -348,86 +398,113 @@ _llm_tracer = otel_trace.get_tracer("coval.llm")
 _tts_tracer = otel_trace.get_tracer("coval.tts")
 
 
-# ── Healthcare tools ───────────────────────────────────────────────────────────
+# ── Banking tools ──────────────────────────────────────────────────────────────
+
 
 class Assistant(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions="""You are a helpful healthcare voice assistant at Wellness Alliance medical practice.
-Help patients with appointments, prescriptions, and lab results.
-Keep responses concise and conversational. Be friendly and professional.
+            instructions="""You are Cassidy, a professional and security-conscious customer service representative at Bronchase Bank.
+Help customers with balance inquiries, funds transfers, disputing transactions, and freezing lost or stolen cards.
+Keep responses concise and conversational. Always confirm the caller's identity — ask for the last four digits of their SSN or the dollar amount of a recent transaction — before sharing account details or moving money.
+Be calm and reassuring, especially when callers report fraud or lost cards.
 You have access to tools — use them when relevant:
-- lookup_appointment: find the patient's upcoming appointment
-- reschedule_appointment: change the date or time of an appointment
-- check_prescription_status: check if a prescription is ready for pickup
-- get_lab_results: retrieve lab test results (note: currently offline for maintenance)""",
+- check_balance: look up the current balance on a checking or savings account
+- transfer_funds: move money between the caller's own accounts
+- dispute_transaction: flag a specific transaction as unauthorized for review
+- freeze_card: freeze a lost or stolen card (note: card services currently offline for maintenance)""",
         )
 
     @function_tool()
-    async def lookup_appointment(self, patient_name: str) -> str:
-        """Look up a patient's upcoming appointment.
+    async def check_balance(self, account_type: str) -> str:
+        """Check the current balance on the caller's account.
 
         Args:
-            patient_name: The patient's full name
+            account_type: 'checking' or 'savings'
         """
-        return json.dumps({
-            "appointment_id": "APT-20240407-001",
-            "provider": "Dr. Sarah Chen",
-            "specialty": "Primary Care",
-            "date": "Tuesday, April 7th",
-            "time": "9:00 AM",
-            "location": "Wellness Alliance — Main Campus, Room 214",
-            "preparation": "Please bring your insurance card and arrive 15 minutes early.",
-        })
+        balances = {"checking": 4287.42, "savings": 12650.18}
+        acct = account_type.lower().strip()
+        balance = balances.get(acct, 0.0)
+        return json.dumps(
+            {
+                "account_type": acct,
+                "account_last4": "8821",
+                "available_balance": balance,
+                "pending_transactions": 2 if acct == "checking" else 0,
+                "as_of": "April 15, 2026 at 11:42 AM PT",
+            }
+        )
 
     @function_tool()
-    async def reschedule_appointment(self, appointment_id: str, new_date: str) -> str:
-        """Reschedule an existing appointment to a new date and time.
+    async def transfer_funds(
+        self, from_account: str, to_account: str, amount: float
+    ) -> str:
+        """Transfer funds between the caller's own Bronchase accounts.
 
         Args:
-            appointment_id: The appointment ID to reschedule
-            new_date: The new date and time, e.g. 'Thursday, April 10th at 11:00 AM'
+            from_account: Source account, 'checking' or 'savings'
+            to_account: Destination account, 'checking' or 'savings'
+            amount: Dollar amount to transfer
         """
-        return json.dumps({
-            "success": True,
-            "appointment_id": appointment_id,
-            "new_date": new_date,
-            "confirmation_number": "CONF-78412",
-            "message": f"Your appointment has been rescheduled to {new_date}. You will receive a confirmation by text.",
-        })
+        confirmation = f"TXN-{2026041500 + abs(hash(f'{from_account}{to_account}{amount}')) % 9999:010d}"
+        return json.dumps(
+            {
+                "success": True,
+                "confirmation_number": confirmation,
+                "from_account": from_account,
+                "to_account": to_account,
+                "amount": amount,
+                "posted_at": "April 15, 2026 at 11:43 AM PT",
+                "message": f"Transferred ${amount:.2f} from {from_account} to {to_account}. Funds are available immediately.",
+            }
+        )
 
     @function_tool()
-    async def check_prescription_status(self, medication_name: str) -> str:
-        """Check whether a prescription is ready for pickup at the pharmacy.
+    async def dispute_transaction(self, transaction_id: str, reason: str) -> str:
+        """File a dispute on a specific transaction as unauthorized or incorrect.
 
         Args:
-            medication_name: The name of the medication
+            transaction_id: Transaction ID shown on statement, e.g. 'TXN-20260414-00389'
+            reason: Reason for dispute, e.g. 'unauthorized', 'wrong amount', 'duplicate charge'
         """
-        return json.dumps({
-            "medication": medication_name,
-            "status": "Ready for pickup",
-            "refills_remaining": 2,
-            "pharmacy": "Wellness Alliance Pharmacy — Main Campus",
-            "pharmacy_hours": "Monday–Friday 8 AM–6 PM, Saturday 9 AM–2 PM",
-            "notes": "Prescription was approved by Dr. Chen and is available now.",
-        })
+        case_id = f"DSP-{transaction_id.split('-')[-1]}-{reason[:3].upper()}"
+        return json.dumps(
+            {
+                "success": True,
+                "case_id": case_id,
+                "transaction_id": transaction_id,
+                "reason": reason,
+                "provisional_credit": True,
+                "next_steps": (
+                    "A provisional credit for the disputed amount will post to your account within "
+                    "1 business day while we investigate. You will receive a written decision within 10 days."
+                ),
+            }
+        )
 
     @function_tool()
-    async def get_lab_results(self, patient_id: str) -> str:
-        """Retrieve a patient's lab test results.
+    async def freeze_card(self, card_last4: str) -> str:
+        """Freeze a lost or stolen card.
 
         Note: Currently offline for maintenance — returns SERVICE_UNAVAILABLE.
-        The agent should inform the patient results are unavailable rather than
-        fabricating values. Used to test Tool Usage Appropriateness.
+        The agent should tell the caller card services are down and provide
+        alternate guidance rather than fabricating a success. Used to test
+        Tool Usage Appropriateness.
 
         Args:
-            patient_id: The patient's ID or name
+            card_last4: Last four digits of the card to freeze
         """
-        return json.dumps({
-            "error": "SERVICE_UNAVAILABLE",
-            "message": "The lab results portal is currently offline for maintenance. Results cannot be retrieved at this time.",
-            "retry_after": "2026-04-01T08:00:00Z",
-        })
+        return json.dumps(
+            {
+                "error": "SERVICE_UNAVAILABLE",
+                "message": "The card services system is currently offline for maintenance. Cards cannot be frozen through this channel right now.",
+                "retry_after": "2026-04-16T08:00:00Z",
+                "alternate_instructions": (
+                    "For urgent lost-or-stolen card situations, please call our 24/7 card services line at (800) 555-BANK "
+                    "or freeze the card yourself from the Bronchase mobile app under Card Controls."
+                ),
+            }
+        )
 
 
 # ── Agent session setup ────────────────────────────────────────────────────────
@@ -457,7 +534,9 @@ async def my_agent(ctx: agents.JobContext):
             participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
             or participant.identity.startswith("sip_")
         )
-        print(f"[coval] participant joined: identity={participant.identity} kind={participant.kind} is_sip={is_sip}")
+        print(
+            f"[coval] participant joined: identity={participant.identity} kind={participant.kind} is_sip={is_sip}"
+        )
         if not is_sip:
             return
         attrs = participant.attributes or {}
@@ -473,10 +552,14 @@ async def my_agent(ctx: agents.JobContext):
             _coval_exporter.set_simulation_id(sim_id)
             print(f"[coval] tracing active from SIP participant attr: {sim_id}")
         else:
-            print(f"[coval] SIP participant joined but no simulation ID found in attrs: {list(attrs.keys())}")
+            print(
+                f"[coval] SIP participant joined but no simulation ID found in attrs: {list(attrs.keys())}"
+            )
 
     # Check participants already in the room (SIP caller joins before agent connects).
-    print(f"[coval] existing participants: {[p.identity for p in ctx.room.remote_participants.values()]}")
+    print(
+        f"[coval] existing participants: {[p.identity for p in ctx.room.remote_participants.values()]}"
+    )
     for _p in ctx.room.remote_participants.values():
         _extract_sim_id_from_participant(_p)
 
@@ -504,7 +587,9 @@ async def my_agent(ctx: agents.JobContext):
     _pending_llm: dict = {"ttfb": None, "input_tokens": 0, "output_tokens": 0}
 
     def _emit_stt_span(ttfb: float, transcript: str) -> None:
-        confidence = 0.95  # synthetic — LiveKit metrics don't expose per-utterance confidence
+        confidence = (
+            0.95  # synthetic — LiveKit metrics don't expose per-utterance confidence
+        )
         with _stt_tracer.start_as_current_span("stt") as span:
             span.set_attribute("stt.transcription", transcript)
             span.set_attribute("metrics.ttfb", round(ttfb, 4))
@@ -515,7 +600,9 @@ async def my_agent(ctx: agents.JobContext):
                 p.set_attribute("stt.confidence", confidence)
                 p.set_attribute("metrics.ttfb", round(ttfb, 4))
 
-    def _emit_llm_span(ttfb: float, finish_reason: str, input_tokens: int, output_tokens: int) -> None:
+    def _emit_llm_span(
+        ttfb: float, finish_reason: str, input_tokens: int, output_tokens: int
+    ) -> None:
         with _llm_tracer.start_as_current_span("llm") as span:
             span.set_attribute("metrics.ttfb", round(ttfb, 4))
             span.set_attribute("llm.finish_reason", finish_reason)
@@ -609,7 +696,7 @@ async def my_agent(ctx: agents.JobContext):
     )
 
     await session.generate_reply(
-        instructions="Greet the patient warmly and ask how you can help them today."
+        instructions="Greet the caller warmly, briefly identify yourself as Cassidy at Bronchase Bank, and ask how you can help today."
     )
 
 
